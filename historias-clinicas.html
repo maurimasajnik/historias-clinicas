@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Historias Clínicas" />
+  <title>Historias Clínicas</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body, #root { height: 100%; }
+    body { background: #F0F4F3; font-family: -apple-system, 'Helvetica Neue', sans-serif; }
+    input, textarea, button { font-family: inherit; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #D9E3E1; border-radius: 4px; }
+    textarea { resize: vertical; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ── Storage (localStorage) ───────────────────────────────────────────────────
+const STORAGE_KEY = "hc_pacientes_v1";
+function loadPatients() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+  catch { return []; }
+}
+function savePatients(p) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(p)); } catch {}
+}
+function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+function today() { return new Date().toISOString().slice(0, 10); }
+function formatDate(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  const months = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+  return `${parseInt(d)} ${months[parseInt(m)-1]} ${y}`;
+}
+
+// ── VCF Parser ───────────────────────────────────────────────────────────────
+function parseVCF(text) {
+  const contacts = [];
+  const cards = text.split(/BEGIN:VCARD/i).filter(c => c.trim());
+  for (const card of cards) {
+    const get = (field) => {
+      const re = new RegExp(`^${field}[^:]*:(.+)$`, "im");
+      const m = card.match(re);
+      return m ? m[1].trim().replace(/\\n/g, " ") : "";
+    };
+    let nombre = "", apellido = "";
+    const fn = get("FN");
+    const n = get("N");
+    if (n) {
+      const parts = n.split(";");
+      apellido = (parts[0] || "").trim();
+      nombre   = (parts[1] || "").trim();
+    }
+    if (!nombre && !apellido && fn) {
+      const words = fn.split(" ");
+      nombre   = words.slice(0, -1).join(" ") || fn;
+      apellido = words.slice(-1)[0] || "";
+    }
+    if (!nombre && fn) { nombre = fn; apellido = ""; }
+    const telefono = get("TEL");
+    const email    = get("EMAIL");
+    if (nombre || apellido) contacts.push({ nombre, apellido, telefono, email });
+  }
+  return contacts;
+}
+
+// ── Colors ───────────────────────────────────────────────────────────────────
+const C = {
+  bg: "#F0F4F3", surface: "#FFFFFF", border: "#D9E3E1",
+  teal: "#1F6B5E", tealLight: "#E8F2F0",
+  charcoal: "#1C2B2A", mid: "#4F6663", muted: "#8DA8A4",
+  red: "#C0392B", amber: "#D97706", amberLight: "#FEF3C7",
+};
+
+// ── Shared styles ────────────────────────────────────────────────────────────
+const S = {
+  label:    { fontSize:11, fontWeight:600, letterSpacing:"0.06em", textTransform:"uppercase", color:C.muted, marginBottom:4 },
+  input:    { width:"100%", padding:"9px 12px", border:`1px solid ${C.border}`, borderRadius:8, fontSize:14, color:C.charcoal, background:C.bg, outline:"none", boxSizing:"border-box" },
+  textarea: { width:"100%", padding:"9px 12px", border:`1px solid ${C.border}`, borderRadius:8, fontSize:14, color:C.charcoal, background:C.bg, outline:"none", minHeight:80, lineHeight:1.5, boxSizing:"border-box" },
+  grid2:    { display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 },
+  card:     { background:C.surface, borderRadius:14, border:`1px solid ${C.border}`, overflow:"hidden" },
+  cardHdr:  { padding:"12px 18px", background:C.bg, borderBottom:`1px solid ${C.border}`, fontSize:11, fontWeight:700, letterSpacing:"0.1em", textTransform:"uppercase", color:C.mid, display:"flex", alignItems:"center", gap:8 },
+  cardBody: { padding:"16px 18px" },
+  value:    { fontSize:15, color:C.charcoal, lineHeight:1.5, whiteSpace:"pre-wrap" },
+  btnSm: (v) => ({
+    padding:"7px 14px", borderRadius:8, fontSize:13, fontWeight:600, cursor:"pointer",
+    border: v==="ghost" ? `1px solid ${C.border}` : "none",
+    background: v==="primary" ? C.teal : v==="danger" ? C.red : v==="ghost" ? C.surface : C.bg,
+    color: v==="primary"||v==="danger" ? "#fff" : C.mid,
+    display:"flex", alignItems:"center", gap:5,
+  }),
+  pill: (color) => ({
+    display:"inline-block", padding:"3px 10px", borderRadius:20,
+    fontSize:12, fontWeight:600,
+    background: color==="teal" ? C.tealLight : C.amberLight,
+    color: color==="teal" ? C.teal : C.amber,
+  }),
+};
+
+// ── SVG Icons ────────────────────────────────────────────────────────────────
+function Icon({ name, size=20 }) {
+  const s = { width:size, height:size };
+  const icons = {
+    plus:    <svg {...s} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" d="M12 5v14M5 12h14"/></svg>,
+    user:    <svg {...s} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path strokeLinecap="round" d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>,
+    note:    <svg {...s} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path strokeLinecap="round" d="M8 9h8M8 13h5"/></svg>,
+    trash:   <svg {...s} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>,
+    edit:    <svg {...s} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path strokeLinecap="round" strokeLinejoin="round" d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
+    check:   <svg {...s} fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg>,
+    x:       <svg {...s} fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18"/></svg>,
+    search:  <svg {...s} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path strokeLinecap="round" d="M21 21l-4.35-4.35"/></svg>,
+    pills:   <svg {...s} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6a4.5 4.5 0 000 9h3a4.5 4.5 0 000-9h-3z"/><path strokeLinecap="round" d="M12 6v9"/></svg>,
+    history: <svg {...s} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" d="M12 8v4l3 3"/><path strokeLinecap="round" d="M3.05 11A9 9 0 1012 3"/><path strokeLinecap="round" d="M3 4v7h7"/></svg>,
+    upload:  <svg {...s} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v12M8 8l4-4 4 4"/></svg>,
+    back:    <svg {...s} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7"/></svg>,
+  };
+  return icons[name] || null;
+}
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+function Toast({ msg }) {
+  if (!msg) return null;
+  return (
+    <div style={{ position:"fixed", bottom:32, left:"50%", transform:"translateX(-50%)",
+      background:C.charcoal, color:"#fff", padding:"10px 20px", borderRadius:10,
+      fontSize:14, fontWeight:500, zIndex:999, pointerEvents:"none",
+      boxShadow:"0 4px 20px rgba(0,0,0,0.2)", whiteSpace:"nowrap" }}>
+      {msg}
+    </div>
+  );
+}
+
+// ── Confirm ──────────────────────────────────────────────────────────────────
+function Confirm({ msg, onConfirm, onCancel }) {
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200 }}>
+      <div style={{ background:C.surface, borderRadius:14, padding:28, width:320, boxShadow:"0 10px 40px rgba(0,0,0,0.2)" }}>
+        <div style={{ fontSize:15, color:C.charcoal, marginBottom:20, lineHeight:1.5 }}>{msg}</div>
+        <div style={{ display:"flex", justifyContent:"flex-end", gap:10 }}>
+          <button style={S.btnSm("ghost")} onClick={onCancel}>Cancelar</button>
+          <button style={S.btnSm("danger")} onClick={onConfirm}><Icon name="trash" size={14}/> Eliminar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── VCF Import Modal ─────────────────────────────────────────────────────────
+function VCFImportModal({ onImport, onCancel }) {
+  const [contacts, setContacts] = useState(null);
+  const [selected, setSelected] = useState(new Set());
+  const [error, setError] = useState("");
+  const fileRef = useRef();
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const parsed = parseVCF(ev.target.result);
+      if (!parsed.length) { setError("No se encontraron contactos en el archivo."); return; }
+      setContacts(parsed);
+      setSelected(new Set(parsed.map((_, i) => i)));
+      setError("");
+    };
+    reader.readAsText(file);
+  };
+
+  const toggle = (i) => { const s=new Set(selected); s.has(i)?s.delete(i):s.add(i); setSelected(s); };
+  const toggleAll = () => setSelected(selected.size===contacts.length ? new Set() : new Set(contacts.map((_,i)=>i)));
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }}>
+      <div style={{ background:C.surface, borderRadius:16, width:"min(620px, 95vw)", maxHeight:"88vh", display:"flex", flexDirection:"column", boxShadow:"0 20px 60px rgba(0,0,0,0.25)", overflow:"hidden" }}>
+        <div style={{ padding:"20px 24px", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div>
+            <div style={{ fontSize:17, fontWeight:700, color:C.charcoal }}>Importar contactos</div>
+            <div style={{ fontSize:13, color:C.muted, marginTop:2 }}>Seleccioná un archivo .vcf exportado desde Contactos</div>
+          </div>
+          <button style={{ ...S.btnSm("ghost"), padding:6 }} onClick={onCancel}><Icon name="x" size={18}/></button>
+        </div>
+
+        <div style={{ flex:1, overflowY:"auto", padding:24 }}>
+          {!contacts && (
+            <div style={{ border:`2px dashed ${C.border}`, borderRadius:12, padding:"36px 24px", textAlign:"center", cursor:"pointer", background:C.bg }} onClick={()=>fileRef.current.click()}>
+              <div style={{ fontSize:36, marginBottom:10 }}>📂</div>
+              <div style={{ fontSize:15, fontWeight:600, color:C.mid }}>Tocá para elegir un archivo .vcf</div>
+              <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>En iOS: Contactos → Seleccionar → Compartir → Guardar en Archivos</div>
+              {error && <div style={{ marginTop:12, color:C.red, fontSize:13 }}>{error}</div>}
+              <input ref={fileRef} type="file" accept=".vcf,text/vcard" style={{ display:"none" }} onChange={handleFile}/>
+            </div>
+          )}
+          {contacts && (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                <div style={{ fontSize:14, color:C.mid }}><strong style={{ color:C.charcoal }}>{contacts.length}</strong> contacto{contacts.length!==1?"s":""} encontrado{contacts.length!==1?"s":""}</div>
+                <button style={{ ...S.btnSm("ghost"), fontSize:13 }} onClick={toggleAll}>{selected.size===contacts.length?"Deseleccionar todos":"Seleccionar todos"}</button>
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                {contacts.map((c,i) => (
+                  <div key={i} onClick={()=>toggle(i)} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 14px", borderRadius:10, cursor:"pointer", background:selected.has(i)?C.tealLight:C.bg, border:`1px solid ${selected.has(i)?C.teal:C.border}` }}>
+                    <div style={{ width:20, height:20, borderRadius:5, flexShrink:0, background:selected.has(i)?C.teal:C.surface, border:`2px solid ${selected.has(i)?C.teal:C.border}`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                      {selected.has(i) && <Icon name="check" size={13}/>}
+                    </div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:14, fontWeight:600, color:selected.has(i)?C.teal:C.charcoal }}>{c.apellido?`${c.apellido}, ${c.nombre}`:c.nombre}</div>
+                      {(c.telefono||c.email) && <div style={{ fontSize:12, color:C.muted, marginTop:1 }}>{[c.telefono,c.email].filter(Boolean).join(" · ")}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div style={{ padding:"16px 24px", borderTop:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ fontSize:13, color:C.muted }}>{contacts && `${selected.size} seleccionado${selected.size!==1?"s":""}`}</div>
+          <div style={{ display:"flex", gap:10 }}>
+            <button style={S.btnSm("ghost")} onClick={onCancel}>Cancelar</button>
+            {contacts && <button style={{ ...S.btnSm("primary"), opacity:selected.size===0?0.5:1 }} disabled={selected.size===0} onClick={()=>onImport(contacts.filter((_,i)=>selected.has(i)))}><Icon name="plus" size={15}/> Importar {selected.size>0?selected.size:""}</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Patient Form Modal ───────────────────────────────────────────────────────
+function PatientModal({ patient, onSave, onCancel }) {
+  const empty = { nombre:"", apellido:"", dni:"", fechaNac:"", telefono:"", email:"", motivoConsulta:"", diagnostico:"", antecedentes:"", medicacion:"" };
+  const [form, setForm] = useState(patient ? {...patient} : empty);
+  const set = k => e => setForm(f=>({...f,[k]:e.target.value}));
+
+  const Field = ({ label, k, type="text", span=1 }) => (
+    <div style={span===2?{gridColumn:"1 / -1"}:{}}>
+      <div style={S.label}>{label}</div>
+      <input style={S.input} type={type} value={form[k]||""} onChange={set(k)} placeholder={label}/>
+    </div>
+  );
+  const TextArea = ({ label, k }) => (
+    <div style={{ gridColumn:"1 / -1" }}>
+      <div style={S.label}>{label}</div>
+      <textarea style={S.textarea} value={form[k]||""} onChange={set(k)} placeholder={label}/>
+    </div>
+  );
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }}>
+      <div style={{ background:C.surface, borderRadius:16, width:"min(680px, 95vw)", maxHeight:"90vh", overflow:"hidden", display:"flex", flexDirection:"column", boxShadow:"0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ padding:"20px 24px", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ fontSize:17, fontWeight:700, color:C.charcoal }}>{patient?"Editar paciente":"Nuevo paciente"}</div>
+          <button style={{ ...S.btnSm("ghost"), padding:6 }} onClick={onCancel}><Icon name="x" size={18}/></button>
+        </div>
+        <div style={{ overflowY:"auto", padding:24, display:"flex", flexDirection:"column", gap:20 }}>
+          <div>
+            <div style={S.cardHdr}><Icon name="user" size={14}/> Datos personales</div>
+            <div style={{ ...S.grid2, marginTop:12 }}>
+              <Field label="Nombre" k="nombre"/>
+              <Field label="Apellido" k="apellido"/>
+              <Field label="DNI" k="dni"/>
+              <Field label="Fecha de nacimiento" k="fechaNac" type="date"/>
+              <Field label="Teléfono" k="telefono"/>
+              <Field label="Email" k="email" type="email"/>
+            </div>
+          </div>
+          <div>
+            <div style={S.cardHdr}><Icon name="note" size={14}/> Información clínica</div>
+            <div style={{ ...S.grid2, marginTop:12 }}>
+              <TextArea label="Motivo de consulta" k="motivoConsulta"/>
+              <TextArea label="Diagnóstico" k="diagnostico"/>
+              <TextArea label="Antecedentes" k="antecedentes"/>
+              <TextArea label="Medicación" k="medicacion"/>
+            </div>
+          </div>
+        </div>
+        <div style={{ padding:"16px 24px", borderTop:`1px solid ${C.border}`, display:"flex", justifyContent:"flex-end", gap:10 }}>
+          <button style={S.btnSm("ghost")} onClick={onCancel}>Cancelar</button>
+          <button style={{ ...S.btnSm("primary"), opacity:(!form.nombre.trim()||!form.apellido.trim())?0.5:1 }} onClick={()=>(form.nombre.trim()&&form.apellido.trim())&&onSave(form)} disabled={!form.nombre.trim()||!form.apellido.trim()}>
+            <Icon name="check" size={15}/> Guardar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Session Modal ────────────────────────────────────────────────────────────
+function SessionModal({ session, onSave, onCancel }) {
+  const [form, setForm] = useState(session || { fecha:today(), texto:"" });
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 }}>
+      <div style={{ background:C.surface, borderRadius:16, width:"min(560px, 95vw)", boxShadow:"0 20px 60px rgba(0,0,0,0.25)", overflow:"hidden", display:"flex", flexDirection:"column" }}>
+        <div style={{ padding:"20px 24px", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ fontSize:17, fontWeight:700 }}>{session?"Editar sesión":"Nueva sesión"}</div>
+          <button style={{ ...S.btnSm("ghost"), padding:6 }} onClick={onCancel}><Icon name="x" size={18}/></button>
+        </div>
+        <div style={{ padding:24, display:"flex", flexDirection:"column", gap:14 }}>
+          <div>
+            <div style={S.label}>Fecha</div>
+            <input style={S.input} type="date" value={form.fecha} onChange={e=>setForm(f=>({...f,fecha:e.target.value}))}/>
+          </div>
+          <div>
+            <div style={S.label}>Notas de evolución</div>
+            <textarea style={{ ...S.textarea, minHeight:160 }} value={form.texto} placeholder="Registrá lo ocurrido en la sesión..." onChange={e=>setForm(f=>({...f,texto:e.target.value}))} autoFocus/>
+          </div>
+        </div>
+        <div style={{ padding:"16px 24px", borderTop:`1px solid ${C.border}`, display:"flex", justifyContent:"flex-end", gap:10 }}>
+          <button style={S.btnSm("ghost")} onClick={onCancel}>Cancelar</button>
+          <button style={{ ...S.btnSm("primary"), opacity:!form.texto.trim()?0.5:1 }} onClick={()=>form.texto.trim()&&onSave(form)} disabled={!form.texto.trim()}>
+            <Icon name="check" size={15}/> Guardar sesión
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Patient Detail ───────────────────────────────────────────────────────────
+function PatientDetail({ patient, onUpdate, onDelete, onBack, isMobile }) {
+  const [editingPatient, setEditingPatient] = useState(false);
+  const [newSession,     setNewSession]     = useState(false);
+  const [editSession,    setEditSession]    = useState(null);
+  const [confirmDelete,  setConfirmDelete]  = useState(null);
+
+  const sessions = [...(patient.sesiones||[])].sort((a,b)=>b.fecha.localeCompare(a.fecha));
+
+  const savePatientEdit = (form) => { onUpdate({...patient,...form}); setEditingPatient(false); };
+  const addSession = (s) => { onUpdate({...patient, sesiones:[...(patient.sesiones||[]),{id:newId(),...s}]}); setNewSession(false); };
+  const updateSession = (idx, s) => {
+    const orig = sessions[idx];
+    onUpdate({...patient, sesiones:(patient.sesiones||[]).map(x=>x.id===orig.id?{...x,...s}:x)});
+    setEditSession(null);
+  };
+  const deleteSession = (idx) => {
+    const orig = sessions[idx];
+    onUpdate({...patient, sesiones:(patient.sesiones||[]).filter(x=>x.id!==orig.id)});
+    setConfirmDelete(null);
+  };
+  const age = patient.fechaNac ? Math.floor((Date.now()-new Date(patient.fechaNac))/(365.25*24*3600*1000)) : null;
+
+  const InfoCard = ({ title, icon, k }) => (
+    <div style={S.card}>
+      <div style={S.cardHdr}><Icon name={icon} size={13}/>{title}</div>
+      <div style={S.cardBody}>
+        <div style={S.value}>{patient[k]||<span style={{ color:C.muted, fontStyle:"italic" }}>Sin registrar</span>}</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      <div style={{ flex:1, display:"flex", flexDirection:"column", height:"100vh", overflow:"hidden" }}>
+        {/* Header */}
+        <div style={{ padding:"20px 28px 16px", borderBottom:`1px solid ${C.border}`, background:C.surface, display:"flex", alignItems:"center", gap:12 }}>
+          {isMobile && (
+            <button style={{ ...S.btnSm("ghost"), padding:6 }} onClick={onBack}><Icon name="back" size={20}/></button>
+          )}
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:22, fontWeight:700, color:C.charcoal }}>{patient.nombre} {patient.apellido}</div>
+            <div style={{ fontSize:13, color:C.muted, marginTop:2 }}>
+              {patient.dni && `DNI ${patient.dni}`}{age!==null&&` · ${age} años`}{patient.telefono&&` · ${patient.telefono}`}
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button style={S.btnSm("ghost")} onClick={()=>setEditingPatient(true)}><Icon name="edit" size={15}/> Editar</button>
+            <button style={S.btnSm("danger")} onClick={()=>setConfirmDelete("patient")}><Icon name="trash" size={15}/></button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"24px 28px", display:"flex", flexDirection:"column", gap:20 }}>
+          <div style={S.grid2}>
+            <InfoCard title="Motivo de consulta" icon="note" k="motivoConsulta"/>
+            <InfoCard title="Diagnóstico" icon="note" k="diagnostico"/>
+          </div>
+          <div style={S.grid2}>
+            <InfoCard title="Antecedentes" icon="history" k="antecedentes"/>
+            <InfoCard title="Medicación" icon="pills" k="medicacion"/>
+          </div>
+
+          {/* Sessions */}
+          <div style={S.card}>
+            <div style={{ ...S.cardHdr, justifyContent:"space-between" }}>
+              <span style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <Icon name="note" size={13}/> Sesiones
+                <span style={S.pill("teal")}>{sessions.length}</span>
+              </span>
+              <button style={{ ...S.btnSm("primary"), padding:"5px 12px", fontSize:12 }} onClick={()=>setNewSession(true)}>
+                <Icon name="plus" size={13}/> Nueva sesión
+              </button>
+            </div>
+            {sessions.length===0 ? (
+              <div style={{ padding:"28px 18px", textAlign:"center", color:C.muted, fontSize:14 }}>Todavía no hay sesiones registradas.</div>
+            ) : sessions.map((s,i) => (
+              <div key={s.id} style={{ borderBottom: i<sessions.length-1?`1px solid ${C.border}`:"none", padding:"14px 18px" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:C.teal, marginBottom:4, letterSpacing:"0.04em" }}>{formatDate(s.fecha)}</div>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button style={{ ...S.btnSm("ghost"), padding:"4px 8px", fontSize:12 }} onClick={()=>setEditSession({idx:i,session:s})}><Icon name="edit" size={13}/></button>
+                    <button style={{ ...S.btnSm("ghost"), padding:"4px 8px", fontSize:12, color:C.red }} onClick={()=>setConfirmDelete({type:"session",idx:i})}><Icon name="trash" size={13}/></button>
+                  </div>
+                </div>
+                <div style={{ fontSize:14, color:C.charcoal, lineHeight:1.6, whiteSpace:"pre-wrap" }}>{s.texto}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {editingPatient && <PatientModal patient={patient} onSave={savePatientEdit} onCancel={()=>setEditingPatient(false)}/>}
+      {newSession     && <SessionModal onSave={addSession} onCancel={()=>setNewSession(false)}/>}
+      {editSession    && <SessionModal session={editSession.session} onSave={s=>updateSession(editSession.idx,s)} onCancel={()=>setEditSession(null)}/>}
+      {confirmDelete==="patient" && <Confirm msg={`¿Eliminar la historia de ${patient.nombre} ${patient.apellido}? Esta acción no se puede deshacer.`} onConfirm={()=>{onDelete(patient.id);setConfirmDelete(null);}} onCancel={()=>setConfirmDelete(null)}/>}
+      {confirmDelete?.type==="session" && <Confirm msg="¿Eliminar esta sesión?" onConfirm={()=>deleteSession(confirmDelete.idx)} onCancel={()=>setConfirmDelete(null)}/>}
+    </>
+  );
+}
+
+// ── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [patients,   setPatients]   = useState(() => loadPatients());
+  const [selected,   setSelected]   = useState(null);
+  const [search,     setSearch]     = useState("");
+  const [newPatient, setNewPatient] = useState(false);
+  const [importVCF,  setImportVCF]  = useState(false);
+  const [toast,      setToast]      = useState("");
+  const [isMobile,   setIsMobile]   = useState(window.innerWidth < 768);
+  const toastTimer = useRef(null);
+
+  useEffect(() => {
+    const fn = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", fn);
+    return () => window.removeEventListener("resize", fn);
+  }, []);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(""), 2800);
+  };
+
+  const persist = (updated) => { setPatients(updated); savePatients(updated); };
+
+  const createPatient = (form) => {
+    const p = { id:newId(), ...form, sesiones:[] };
+    persist([...patients, p]);
+    setSelected(p.id);
+    setNewPatient(false);
+    showToast("Paciente creado");
+  };
+  const updatePatient = (updated) => {
+    persist(patients.map(p => p.id===updated.id ? updated : p));
+    showToast("Cambios guardados");
+  };
+  const deletePatient = (id) => {
+    persist(patients.filter(p => p.id!==id));
+    setSelected(null);
+    showToast("Historia eliminada");
+  };
+  const importContacts = (contacts) => {
+    const existing = new Set(patients.map(p=>`${p.nombre}|${p.apellido}`.toLowerCase()));
+    const newOnes = contacts.filter(c=>!existing.has(`${c.nombre}|${c.apellido}`.toLowerCase())).map(c=>({id:newId(),...c,sesiones:[]}));
+    const dupes = contacts.length - newOnes.length;
+    persist([...patients, ...newOnes]);
+    setImportVCF(false);
+    showToast(newOnes.length===0 ? "Todos ya existían" : `${newOnes.length} paciente${newOnes.length!==1?"s":""} importado${newOnes.length!==1?"s":""}${dupes>0?` (${dupes} duplicado${dupes!==1?"s":""} omitido${dupes!==1?"s":""})`:""}` );
+  };
+
+  const filtered = patients.filter(p => {
+    const q = search.toLowerCase();
+    return !q || p.nombre.toLowerCase().includes(q) || p.apellido.toLowerCase().includes(q) || (p.dni||"").includes(q);
+  });
+
+  const currentPatient = patients.find(p => p.id===selected);
+  const showList   = !isMobile || !selected;
+  const showDetail = !isMobile || !!selected;
+
+  const Sidebar = () => (
+    <div style={{ width:isMobile?"100%":320, minWidth:isMobile?"unset":320, background:C.surface, borderRight:isMobile?"none":`1px solid ${C.border}`, display:"flex", flexDirection:"column", height:"100vh" }}>
+      <div style={{ padding:"24px 20px 16px", borderBottom:`1px solid ${C.border}` }}>
+        <div style={{ fontSize:13, fontWeight:600, letterSpacing:"0.08em", textTransform:"uppercase", color:C.teal, marginBottom:12 }}>Historias Clínicas</div>
+        <div style={{ display:"flex", alignItems:"center", gap:8, background:C.bg, border:`1px solid ${C.border}`, borderRadius:10, padding:"8px 12px" }}>
+          <Icon name="search" size={16}/>
+          <input style={{ flex:1, border:"none", background:"transparent", outline:"none", fontSize:14, color:C.charcoal }} placeholder="Buscar paciente..." value={search} onChange={e=>setSearch(e.target.value)}/>
+        </div>
+      </div>
+
+      <div style={{ flex:1, overflowY:"auto", padding:"8px 0" }}>
+        {filtered.length===0 && <div style={{ padding:"20px", color:C.muted, fontSize:14 }}>{search?"Sin resultados.":"Sin pacientes."}</div>}
+        {filtered.map(p => (
+          <div key={p.id} onClick={()=>setSelected(p.id)}
+            style={{ padding:"12px 20px", cursor:"pointer", background:selected===p.id?C.tealLight:"transparent", borderLeft:selected===p.id?`3px solid ${C.teal}`:"3px solid transparent", transition:"background 0.15s" }}>
+            <div style={{ fontSize:15, fontWeight:selected===p.id?600:500, color:selected===p.id?C.teal:C.charcoal }}>{p.apellido}, {p.nombre}</div>
+            <div style={{ fontSize:12, color:C.muted, marginTop:2 }}>
+              {p.diagnostico ? p.diagnostico.slice(0,40)+(p.diagnostico.length>40?"…":"") : "Sin diagnóstico"}
+              {" · "}{(p.sesiones||[]).length} sesión{(p.sesiones||[]).length!==1?"es":""}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ padding:"0 16px 16px", display:"flex", flexDirection:"column", gap:8 }}>
+        <button onClick={()=>setNewPatient(true)} style={{ padding:"11px", background:C.teal, color:"#fff", border:"none", borderRadius:10, fontSize:14, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <Icon name="plus" size={16}/> Nuevo paciente
+        </button>
+        <button onClick={()=>setImportVCF(true)} style={{ padding:"11px", background:C.bg, color:C.teal, border:`1px solid ${C.border}`, borderRadius:10, fontSize:14, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <Icon name="upload" size={16}/> Importar desde .vcf
+        </button>
+      </div>
+    </div>
+  );
+
+  const EmptyScreen = () => (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", color:C.muted, gap:12, padding:40 }}>
+      <div style={{ fontSize:56 }}>📋</div>
+      <div style={{ fontSize:18, fontWeight:600, color:C.mid }}>Sin pacientes aún</div>
+      <div style={{ fontSize:14, textAlign:"center", maxWidth:260 }}>Creá la primera historia clínica para empezar.</div>
+      <button onClick={()=>setNewPatient(true)} style={{ padding:"11px 24px", background:C.teal, color:"#fff", border:"none", borderRadius:10, fontSize:14, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
+        <Icon name="plus" size={16}/> Nuevo paciente
+      </button>
+    </div>
+  );
+
+  return (
+    <div style={{ fontFamily:"-apple-system,'Helvetica Neue',sans-serif", background:C.bg, minHeight:"100vh", color:C.charcoal, display:"flex", WebkitFontSmoothing:"antialiased" }}>
+      {showList  && <Sidebar/>}
+      {showDetail && (
+        currentPatient
+          ? <PatientDetail patient={currentPatient} onUpdate={updatePatient} onDelete={deletePatient} onBack={()=>setSelected(null)} isMobile={isMobile}/>
+          : <EmptyScreen/>
+      )}
+
+      {newPatient && <PatientModal onSave={createPatient} onCancel={()=>setNewPatient(false)}/>}
+      {importVCF  && <VCFImportModal onImport={importContacts} onCancel={()=>setImportVCF(false)}/>}
+      <Toast msg={toast}/>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
